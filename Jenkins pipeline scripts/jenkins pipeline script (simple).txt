@@ -1,0 +1,258 @@
+pipeline {
+    agent any
+
+    environment {
+        JMETER_HOME    = 'D:\\apache-jmeter-5.6.3'
+        JMX_DIR        = 'D:\\jmeter project\\JMX files'
+        FIXED_REPORT   = 'D:\\jmeter project\\html report'
+        FIXED_RESULTS  = 'D:\\jmeter project\\results'
+        WS_RESULTS_DIR = 'jmeter-results'         // Performance plugin reads here
+        WS_REPORT_DIR  = 'jmeter-html-report'     // HTML Publisher archives this
+        JMETER_ADDOPTS = '-Djava.awt.headless=true'
+        // Trend gate thresholds (percent vs previous build p95)
+        P95_UNSTABLE_PCT = '5'
+        P95_FAIL_PCT     = '10'
+    }
+
+    options {
+        timestamps()
+        disableConcurrentBuilds()
+    }
+
+    stages {
+        stage('Sanity & Prep') {
+            steps {
+                bat '''
+                    @echo off
+                    setlocal EnableExtensions
+                    chcp 65001 >nul
+
+                    echo ============================================
+                    echo Cleanup: Deleting old JTL files and HTML reports
+                    echo ============================================
+
+                    set "JVM_ARGS=%JMETER_ADDOPTS%"
+                    echo WORKSPACE=%WORKSPACE%
+                    echo JMETER_HOME=%JMETER_HOME%
+                    echo JMX_DIR=%JMX_DIR%
+                    echo FIXED_RESULTS=%FIXED_RESULTS%
+                    echo FIXED_REPORT=%FIXED_REPORT%
+
+                    call "%JMETER_HOME%\\bin\\jmeter.bat" -v
+                    echo JMETER_VERSION_RC=%ERRORLEVEL%
+
+                    if not exist "%JMX_DIR%" mkdir "%JMX_DIR%"
+
+                    if exist "%FIXED_RESULTS%\\." (
+                        del /q "%FIXED_RESULTS%\\*.jtl" 2>nul
+                    ) else (
+                        mkdir "%FIXED_RESULTS%"
+                    )
+
+                    if exist "%FIXED_REPORT%\\." rmdir /s /q "%FIXED_REPORT%"
+                    mkdir "%FIXED_REPORT%"
+
+                    if exist "%WORKSPACE%\\%WS_RESULTS_DIR%\\." rmdir /s /q "%WORKSPACE%\\%WS_RESULTS_DIR%"
+                    if exist "%WORKSPACE%\\%WS_REPORT_DIR%\\."  rmdir /s /q "%WORKSPACE%\\%WS_REPORT_DIR%"
+                    mkdir "%WORKSPACE%\\%WS_RESULTS_DIR%"
+                    mkdir "%WORKSPACE%\\%WS_REPORT_DIR%"
+
+                    rem NOTE: Trend folder ko mat chhedo (baseline yahi save hoti hai)
+
+                    echo === JMX in %JMX_DIR% ===
+                    dir /a-d /-c "%JMX_DIR%\\*.jmx" 2>nul
+
+                    echo ============================================
+                    echo Cleanup completed successfully
+                    echo ============================================
+                '''
+            }
+        }
+
+        stage('Run JMeter (Auto-detect)') {
+            steps {
+                bat '''
+                    @echo off
+                    setlocal EnableExtensions EnableDelayedExpansion
+                    chcp 65001 >nul
+
+                    set "COUNT=0"
+                    set "ONE_NAME="
+                    pushd "%JMX_DIR%" >nul 2>&1
+                    if errorlevel 1 (
+                        echo ERROR: JMX_DIR not accessible: "%JMX_DIR%"
+                        exit /b 2
+                    )
+                    for %%F in (*.jmx) do (
+                        set /a COUNT+=1
+                        set "ONE_NAME=%%~nxF"
+                    )
+                    popd >nul
+
+                    echo [INFO] Found !COUNT! JMX file(s) in "%JMX_DIR%"
+
+                    if "!COUNT!"=="0" (
+                        echo ERROR: No .jmx files found in "%JMX_DIR%".
+                        exit /b 2
+                    )
+
+                    if "!COUNT!"=="1" (
+                        echo [MODE] SINGLE (running "!ONE_NAME!")
+                        call :RUN_ONE "!ONE_NAME!" || (echo FAIL@RUN_ONE SINGLE & exit /b 1)
+
+                        if exist "%WORKSPACE%\\%WS_REPORT_DIR%\\." rmdir /s /q "%WORKSPACE%\\%WS_REPORT_DIR%"
+                        mkdir "%WORKSPACE%\\%WS_REPORT_DIR%"
+
+                        robocopy "%RUN_REPORT_DIR%" "%WORKSPACE%\\%WS_REPORT_DIR%" /e /np /nfl /ndl /r:1 /w:1 /mt:8
+                        set "RC=%ERRORLEVEL%"
+                        echo ROBOCOPY_RC=%RC%
+                        if %RC% GEQ 8 exit /b 1
+
+                        exit /b 0
+                    )
+
+                    echo [MODE] ALL (running every *.jmx in "%JMX_DIR%")
+                    pushd "%JMX_DIR%" >nul
+                    for %%F in (*.jmx) do (
+                        call :RUN_ONE "%%~nxF" || (echo FAIL@RUN_ONE ALL on %%~nxF & popd & exit /b 1)
+                        robocopy "%RUN_REPORT_DIR%" "%WORKSPACE%\\%WS_REPORT_DIR%\\%RUN_NAME%" /e /np /nfl /ndl /r:1 /w:1 /mt:8
+                        if !ERRORLEVEL! GEQ 8 (popd & exit /b 1)
+                    )
+                    popd >nul
+
+                    > "%WORKSPACE%\\%WS_REPORT_DIR%\\index.html" (
+                        echo ^<!DOCTYPE html^>
+                        echo ^<html^>^<head^>^<meta charset=^"utf-8^"^>^<title^>JMeter Reports^</title^>^</head^>
+                        echo ^<body style=^"font-family:Segoe UI,Arial,sans-serif; margin:24px;^"^>
+                        echo ^<h2^>JMeter HTML Reports^</h2^>
+                        echo ^<ul^>
+                    )
+                    for /D %%D in ("%WORKSPACE%\\%WS_REPORT_DIR%\\*") do (
+                        set "DN=%%~nxD"
+                        if /I not "!DN!"=="assets" if /I not "!DN!"=="content" if /I not "!DN!"=="data" (
+                            >> "%WORKSPACE%\\%WS_REPORT_DIR%\\index.html" echo ^<li^>^<a href=^"!DN!/index.html^"^>!DN!^</a^>^</li^>
+                        )
+                    )
+                    >> "%WORKSPACE%\\%WS_REPORT_DIR%\\index.html" (echo ^</ul^> & echo ^</body^>^</html^>)
+                    exit /b 0
+
+                    :RUN_ONE
+                    set "SEL_JMX=%~1"
+                    set "RUN_NAME=%SEL_JMX%"
+                    set "RUN_NAME=%RUN_NAME:.jmx=%"
+                    set "RUN_NAME=%RUN_NAME: =_%"
+                    set "RUN_NAME=%RUN_NAME:(=%"
+                    set "RUN_NAME=%RUN_NAME:)=%"
+                    set "RUN_NAME=%RUN_NAME:&=%"
+
+                    echo ------------------------------------------------------------
+                    echo Running JMeter on "%SEL_JMX%" (run name: %RUN_NAME%)
+                    echo JTL file: %FIXED_RESULTS%\\%RUN_NAME%.jtl
+                    echo HTML report: %FIXED_REPORT%\\%RUN_NAME%
+                    echo ------------------------------------------------------------
+
+                    set "JVM_ARGS=%JMETER_ADDOPTS%"
+
+                    call "%JMETER_HOME%\\bin\\jmeter.bat" -n -t "%JMX_DIR%\\%SEL_JMX%" -l "%FIXED_RESULTS%\\%RUN_NAME%.jtl"
+                    set "RC_JM_RUN=%ERRORLEVEL%"
+                    echo RC_JM_RUN=%RC_JM_RUN%
+                    if %RC_JM_RUN% NEQ 0 (
+                        if exist "%JMETER_HOME%\\bin\\jmeter.log" type "%JMETER_HOME%\\bin\\jmeter.log"
+                        exit /b 1
+                    )
+
+                    for %%S in ("%FIXED_RESULTS%\\%RUN_NAME%.jtl") do (
+                        echo JTL_SIZE=%%~zS bytes
+                        if %%~zS LSS 10 exit /b 1
+                    )
+
+                    set "RUN_REPORT_DIR=%FIXED_REPORT%\\%RUN_NAME%"
+                    if exist "%RUN_REPORT_DIR%\\." rmdir /s /q "%RUN_REPORT_DIR%"
+                    call "%JMETER_HOME%\\bin\\jmeter.bat" -g "%FIXED_RESULTS%\\%RUN_NAME%.jtl" -o "%RUN_REPORT_DIR%"
+                    set "RC_JM_HTML=%ERRORLEVEL%"
+                    echo RC_JM_HTML=%RC_JM_HTML%
+                    if %RC_JM_HTML% NEQ 0 (
+                        if exist "%JMETER_HOME%\\bin\\jmeter.log" type "%JMETER_HOME%\\bin\\jmeter.log"
+                        exit /b 1
+                    )
+
+                    copy /y "%FIXED_RESULTS%\\%RUN_NAME%.jtl" "%WORKSPACE%\\%WS_RESULTS_DIR%\\%RUN_NAME%.jtl" >nul
+                    exit /b 0
+                '''
+            }
+        }
+
+        stage('Trend Gate (p95)') {
+            steps {
+                script {
+                    // Compute p95 from all JTLs and compare vs previous build
+                    def code = bat(returnStatus: true, script: '''
+                        @echo off
+                        setlocal EnableExtensions
+                        chcp 65001 >nul
+
+                        powershell -NoProfile -Command ^
+                          "$outDir = Join-Path $env:WORKSPACE 'trend'; " ^
+                          "New-Item -Force -ItemType Directory $outDir | Out-Null; " ^
+                          "$jtlDir = Join-Path $env:WORKSPACE $env:WS_RESULTS_DIR; " ^
+                          "$files = Get-ChildItem -Path $jtlDir -Filter *.jtl -ErrorAction SilentlyContinue; " ^
+                          "if(-not $files){ Write-Host 'No JTL files found in workspace.'; exit 1 } " ^
+                          "$elapsed = @(); " ^
+                          "foreach($f in $files){ $rows = Import-Csv $f.FullName; $elapsed += ($rows | Where-Object { $_.success -eq 'true' } | ForEach-Object {[int]$_.elapsed}); } " ^
+                          "if(-not $elapsed -or $elapsed.Count -eq 0){ Write-Host 'No successful samples to compute p95.'; exit 1 } " ^
+                          "$sorted = $elapsed | Sort-Object; $idx = [int][Math]::Ceiling($sorted.Count * 0.95) - 1; if($idx -lt 0){$idx=0}; " ^
+                          "$p95 = $sorted[$idx]; " ^
+                          "$curFile = Join-Path $outDir 'p95_current.txt'; $prevFile = Join-Path $outDir 'p95_prev.txt'; " ^
+                          "Set-Content -Path $curFile -Value $p95; " ^
+                          "if(Test-Path $prevFile){ " ^
+                          "  $prev = [int](Get-Content $prevFile); " ^
+                          "  $delta = $p95 - $prev; " ^
+                          "  $pct = if($prev -gt 0){ [math]::Round(($delta*100.0)/$prev,2) } else { 0 }; " ^
+                          "  Write-Host ('P95 prev={0} ms, curr={1} ms, change={2} ms ({3}%%)' -f $prev,$p95,$delta,$pct); " ^
+                          "  if($pct -ge [double]$env:P95_FAIL_PCT){ Write-Host ('FAIL: p95 worsened >= {0}%%' -f $env:P95_FAIL_PCT); exit 2 } " ^
+                          "  elseif($pct -ge [double]$env:P95_UNSTABLE_PCT){ Write-Host ('UNSTABLE: p95 worsened >= {0}%%' -f $env:P95_UNSTABLE_PCT); exit 3 } " ^
+                          "  else { Write-Host 'OK: p95 improved or flat'; } " ^
+                          "} else { Write-Host 'No previous baseline; creating one.' } " ^
+                          "Copy-Item -Force $curFile $prevFile; "
+                    ''')
+                    if (code == 2) {
+                        error 'Trend Gate: p95 worsened beyond FAIL threshold'
+                    } else if (code == 3) {
+                        currentBuild.result = 'UNSTABLE'
+                        echo 'Trend Gate: p95 worsened beyond UNSTABLE threshold (build marked UNSTABLE)'
+                    } else if (code != 0) {
+                        echo "Trend Gate: skipped (no baseline yet or no samples)."
+                    }
+                }
+            }
+        }
+
+        stage('Publish Reports') {
+            steps {
+                publishHTML(target: [
+                    reportDir: 'jmeter-html-report',
+                    reportFiles: 'index.html',
+                    reportName: 'JMeter HTML Dashboard',
+                    keepAll: true,
+                    alwaysLinkToLastBuild: true,
+                    allowMissing: false
+                ])
+                // Keep relative mode off to avoid NPE until enough history is present.
+                perfReport(
+                    sourceDataFiles: 'jmeter-results/*.jtl',
+                    errorFailedThreshold: -1,
+                    errorUnstableThreshold: -1,
+                    nthBuildNumber: 1,
+                    modeOfThreshold: false
+                )
+            }
+        }
+    }
+
+    post {
+        always {
+            // Save JTLs + trend numbers so history remains
+            archiveArtifacts artifacts: 'jmeter-results/*.jtl, trend/*.txt', fingerprint: true
+        }
+    }
+}

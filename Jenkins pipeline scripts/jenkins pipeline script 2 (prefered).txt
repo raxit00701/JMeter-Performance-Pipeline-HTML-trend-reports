@@ -1,0 +1,276 @@
+pipeline {
+    agent any
+
+    environment {
+        JMETER_HOME    = 'D:\\apache-jmeter-5.6.3'
+        JMX_DIR        = 'D:\\jmeter project\\JMX files'
+        FIXED_REPORT   = 'D:\\jmeter project\\html report'
+        FIXED_RESULTS  = 'D:\\jmeter project\\results'
+        WS_RESULTS_DIR = 'jmeter-results'         // Performance plugin reads here
+        WS_REPORT_DIR  = 'jmeter-html-report'     // HTML Publisher archives this
+        JMETER_ADDOPTS = '-Djava.awt.headless=true'  // JMeter runs headless
+    }
+
+    options {
+        timestamps()
+        disableConcurrentBuilds()
+    }
+
+    stages {
+        stage('Sanity & Prep') {
+            steps {
+                bat '''
+                    @echo off
+                    setlocal EnableExtensions
+                    chcp 65001 >nul
+
+                    echo ============================================
+                    echo Cleanup: Deleting old JTL files and HTML reports
+                    echo ============================================
+
+                    rem Honor JMETER_ADDOPTS via JVM_ARGS for jmeter.bat
+                    set "JVM_ARGS=%JMETER_ADDOPTS%"
+
+                    rem Quick env echo
+                    echo WORKSPACE=%WORKSPACE%
+                    echo JMETER_HOME=%JMETER_HOME%
+                    echo JMX_DIR=%JMX_DIR%
+                    echo FIXED_RESULTS=%FIXED_RESULTS%
+                    echo FIXED_REPORT=%FIXED_REPORT%
+
+                    rem Verify JMeter installation
+                    call "%JMETER_HOME%\\bin\\jmeter.bat" -v
+                    echo JMETER_VERSION_RC=%ERRORLEVEL%
+
+                    rem Ensure base dirs
+                    if not exist "%JMX_DIR%" mkdir "%JMX_DIR%"
+                    if exist "%FIXED_RESULTS%\\." (
+                        del /q "%FIXED_RESULTS%\\*.jtl" 2>nul
+                    ) else (
+                        mkdir "%FIXED_RESULTS%"
+                    )
+
+                    if exist "%FIXED_REPORT%\\." rmdir /s /q "%FIXED_REPORT%"
+                    mkdir "%FIXED_REPORT%"
+
+                    rem Clean workspace mirrors
+                    if exist "%WORKSPACE%\\%WS_RESULTS_DIR%\\." rmdir /s /q "%WORKSPACE%\\%WS_RESULTS_DIR%"
+                    if exist "%WORKSPACE%\\%WS_REPORT_DIR%\\."  rmdir /s /q "%WORKSPACE%\\%WS_REPORT_DIR%"
+                    mkdir "%WORKSPACE%\\%WS_RESULTS_DIR%"
+                    mkdir "%WORKSPACE%\\%WS_REPORT_DIR%"
+
+                    rem Show what JMXs are available
+                    echo === JMX in %JMX_DIR% ===
+                    dir /a-d /-c "%JMX_DIR%\\*.jmx" 2>nul
+
+                    echo ============================================
+                    echo Cleanup completed successfully
+                    echo ============================================
+                '''
+            }
+        }
+
+        stage('Run JMeter (Auto-detect)') {
+            steps {
+                bat '''
+                    @echo off
+                    setlocal EnableExtensions EnableDelayedExpansion
+                    chcp 65001 >nul
+
+                    rem -------- Count *.jmx in JMX_DIR --------
+                    set "COUNT=0"
+                    set "ONE_NAME="
+                    pushd "%JMX_DIR%" >nul 2>&1
+                    if errorlevel 1 (
+                        echo ERROR: JMX_DIR not accessible: "%JMX_DIR%"
+                        exit /b 2
+                    )
+                    for %%F in (*.jmx) do (
+                        set /a COUNT+=1
+                        set "ONE_NAME=%%~nxF"
+                    )
+                    popd >nul
+
+                    echo [INFO] Found !COUNT! JMX file(s) in "%JMX_DIR%"
+
+                    if "!COUNT!"=="0" (
+                        echo ERROR: No .jmx files found in "%JMX_DIR%".
+                        exit /b 2
+                    )
+
+                    if "!COUNT!"=="1" (
+                        echo [MODE] SINGLE (running "!ONE_NAME!")
+                        call :RUN_ONE "!ONE_NAME!" || (
+                            echo FAIL@RUN_ONE SINGLE
+                            exit /b 1
+                        )
+
+                        rem ---- Flatten SINGLE report to root of WS_REPORT_DIR ----
+                        if exist "%WORKSPACE%\\%WS_REPORT_DIR%\\." rmdir /s /q "%WORKSPACE%\\%WS_REPORT_DIR%"
+                        mkdir "%WORKSPACE%\\%WS_REPORT_DIR%"
+
+                        robocopy "%RUN_REPORT_DIR%" "%WORKSPACE%\\%WS_REPORT_DIR%" /e /np /nfl /ndl /r:1 /w:1 /mt:8
+                        set "RC=%ERRORLEVEL%"
+                        echo ROBOCOPY_RC=%RC%
+                        if %RC% GEQ 8 (
+                            echo ERROR: ROBOCOPY failed with code %RC%
+                            exit /b 1
+                        )
+
+                        echo === DEBUG (SINGLE): jmeter-html-report root ===
+                        dir /b "%WORKSPACE%\\%WS_REPORT_DIR%" 2>nul
+                        echo.
+                        echo === DEBUG (SINGLE): content\\js ===
+                        dir /b "%WORKSPACE%\\%WS_REPORT_DIR%\\content\\js" 2>nul
+                        exit /b 0
+                    )
+
+                    rem -------- 2+ files => run ALL --------
+                    echo [MODE] ALL (running every *.jmx in "%JMX_DIR%")
+                    pushd "%JMX_DIR%" >nul
+                    for %%F in (*.jmx) do (
+                        call :RUN_ONE "%%~nxF" || (
+                            echo FAIL@RUN_ONE ALL on %%~nxF
+                            popd
+                            exit /b 1
+                        )
+
+                        rem Mirror each per-test dashboard into WS_REPORT_DIR\\<RunName>
+                        robocopy "%RUN_REPORT_DIR%" "%WORKSPACE%\\%WS_REPORT_DIR%\\%RUN_NAME%" /e /np /nfl /ndl /r:1 /w:1 /mt:8
+                        set "RC2=!ERRORLEVEL!"
+                        echo ROBOCOPY_RC=!RC2! for %%~nxF
+                        if !RC2! GEQ 8 (
+                            echo ERROR: ROBOCOPY failed with code !RC2! for %%~nxF
+                            popd
+                            exit /b 1
+                        )
+                    )
+                    popd >nul
+
+                    rem ---- Build landing index.html linking each subfolder ----
+                    > "%WORKSPACE%\\%WS_REPORT_DIR%\\index.html" (
+                        echo ^<!DOCTYPE html^>
+                        echo ^<html^>^<head^>^<meta charset=^"utf-8^"^>^<title^>JMeter Reports^</title^>^</head^>
+                        echo ^<body style=^"font-family:Segoe UI,Arial,sans-serif; margin:24px;^"^>
+                        echo ^<h2^>JMeter HTML Reports^</h2^>
+                        echo ^<ul^>
+                    )
+                    for /D %%D in ("%WORKSPACE%\\%WS_REPORT_DIR%\\*") do (
+                        set "DN=%%~nxD"
+                        if /I not "!DN!"=="assets" if /I not "!DN!"=="content" if /I not "!DN!"=="data" (
+                            >> "%WORKSPACE%\\%WS_REPORT_DIR%\\index.html" echo ^<li^>^<a href=^"!DN!/index.html^"^>!DN!^</a^>^</li^>
+                        )
+                    )
+                    >> "%WORKSPACE%\\%WS_REPORT_DIR%\\index.html" (
+                        echo ^</ul^>
+                        echo ^</body^>^</html^>
+                    )
+
+                    echo === DEBUG (ALL): ws report root ===
+                    dir /b "%WORKSPACE%\\%WS_REPORT_DIR%" 2>nul
+                    exit /b 0
+
+                    :RUN_ONE
+                    rem %~1 = JMX filename
+                    set "SEL_JMX=%~1"
+                    set "RUN_NAME=%SEL_JMX%"
+                    set "RUN_NAME=%RUN_NAME:.jmx=%"
+
+                    rem ---- sanitize run name (avoid spaces/specials in folder/file names)
+                    set "RUN_NAME=%RUN_NAME: =_%"
+                    set "RUN_NAME=%RUN_NAME:(=%"
+                    set "RUN_NAME=%RUN_NAME:)=%"
+                    set "RUN_NAME=%RUN_NAME:&=%"
+
+                    echo ------------------------------------------------------------
+                    echo Running JMeter on "%SEL_JMX%" (run name: %RUN_NAME%)
+                    echo JTL file: %FIXED_RESULTS%\\%RUN_NAME%.jtl
+                    echo HTML report: %FIXED_REPORT%\\%RUN_NAME%
+                    echo ------------------------------------------------------------
+
+                    rem Honor JMETER_ADDOPTS in this run
+                    set "JVM_ARGS=%JMETER_ADDOPTS%"
+
+                    rem Run JMeter non-GUI to produce JTL
+                    call "%JMETER_HOME%\\bin\\jmeter.bat" -n -t "%JMX_DIR%\\%SEL_JMX%" -l "%FIXED_RESULTS%\\%RUN_NAME%.jtl"
+                    set "RC_JM_RUN=%ERRORLEVEL%"
+                    echo RC_JM_RUN=%RC_JM_RUN%
+                    if %RC_JM_RUN% NEQ 0 (
+                        echo ERROR: JMeter non-zero exit for "%SEL_JMX%"
+                        if exist "%JMETER_HOME%\\bin\\jmeter.log" (
+                            echo --- jmeter.log ---
+                            type "%JMETER_HOME%\\bin\\jmeter.log"
+                        )
+                        exit /b 1
+                    )
+
+                    rem Guard against empty/short JTL (e.g., early aborts)
+                    for %%S in ("%FIXED_RESULTS%\\%RUN_NAME%.jtl") do (
+                        echo JTL_SIZE=%%~zS bytes
+                        if %%~zS LSS 10 (
+                            echo ERROR: JTL looks empty for "%SEL_JMX%"
+                            exit /b 1
+                        )
+                    )
+
+                    rem Generate HTML dashboard from JTL
+                    set "RUN_REPORT_DIR=%FIXED_REPORT%\\%RUN_NAME%"
+                    if exist "%RUN_REPORT_DIR%\\." rmdir /s /q "%RUN_REPORT_DIR%"
+                    call "%JMETER_HOME%\\bin\\jmeter.bat" -g "%FIXED_RESULTS%\\%RUN_NAME%.jtl" -o "%RUN_REPORT_DIR%"
+                    set "RC_JM_HTML=%ERRORLEVEL%"
+                    echo RC_JM_HTML=%RC_JM_HTML%
+                    if %RC_JM_HTML% NEQ 0 (
+                        echo ERROR: HTML dashboard generation failed for "%SEL_JMX%"
+                        if exist "%JMETER_HOME%\\bin\\jmeter.log" (
+                            echo --- jmeter.log ---
+                            type "%JMETER_HOME%\\bin\\jmeter.log"
+                        )
+                        exit /b 1
+                    )
+
+                    echo HTML report created: %RUN_REPORT_DIR%
+
+                    rem Mirror JTL into workspace for Performance plugin
+                    copy /y "%FIXED_RESULTS%\\%RUN_NAME%.jtl" "%WORKSPACE%\\%WS_RESULTS_DIR%\\%RUN_NAME%.jtl" >nul
+
+                    exit /b 0
+                '''
+            }
+        }
+
+        stage('Publish Reports') {
+            steps {
+                // HTML dashboard (landing page or flattened single)
+                publishHTML(target: [
+                    reportDir: 'jmeter-html-report',
+                    reportFiles: 'index.html',
+                    reportName: 'JMeter HTML Dashboard',
+                    keepAll: true,
+                    alwaysLinkToLastBuild: true,
+                    allowMissing: false
+                ])
+
+              // Performance trend (visualization only; no gating)
+perfReport(
+    sourceDataFiles: 'jmeter-results/*.jtl',
+    errorFailedThreshold: 100,            // keep build from failing here
+    errorUnstableThreshold: 100,          // visualization only
+    nthBuildNumber: 10,
+    modeOfThreshold: true,
+    modePerformancePerTestCase: true,     // per-label graphs
+    compareBuildPrevious: true,           // trend vs previous build
+    modeThroughput: true,                 // show throughput trends
+    percentiles: '0,50,90,95,100',        // richer percentile plots
+    failBuildIfNoResultFile: false        // don't fail if no JTL
+)
+
+            }
+        }
+    }
+
+    post {
+        always {
+            archiveArtifacts artifacts: 'jmeter-results/*.jtl', fingerprint: true
+        }
+    }
+}

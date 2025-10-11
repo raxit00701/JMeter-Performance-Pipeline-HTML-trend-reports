@@ -1,0 +1,514 @@
+pipeline {
+    agent any
+    
+    environment {
+        JMETER_HOME = 'D:\\apache-jmeter-5.6.3'
+        JMX_DIR = 'D:\\jmeter project\\JMX files'
+        FIXED_REPORT = 'D:\\jmeter project\\html report'
+        FIXED_RESULTS = 'D:\\jmeter project\\results'
+        WS_RESULTS_DIR = 'jmeter-results'
+        WS_REPORT_DIR = 'jmeter-html-report'
+        JMETER_ADDOPTS = '-Djava.awt.headless=true'
+        
+        // ===== PERFORMANCE TREND & THRESHOLD CONFIGURATION =====
+        ENABLE_PERFORMANCE_TREND = 'true'        // true/false - Enable performance trend tracking
+        ENABLE_THRESHOLD_GATE = 'true'           // true/false - Enable threshold-based build gate
+        
+        // Threshold settings (only active if ENABLE_THRESHOLD_GATE = true)
+        MAX_ERROR_PERCENTAGE = '5.0'             // Fail if error% > this value
+        MAX_AVG_RESPONSE_TIME = '3000'           // Fail if avg response time (ms) > this
+        MIN_THROUGHPUT = '10'                    // Fail if throughput (req/sec) < this
+        MAX_90_PERCENTILE = '5000'               // Fail if 90th percentile (ms) > this
+    }
+    
+    options {
+        timestamps()
+        disableConcurrentBuilds()
+        buildDiscarder(logRotator(numToKeepStr: '30', artifactNumToKeepStr: '30'))
+    }
+    
+    stages {
+        stage('Sanity & Prep') {
+            steps {
+                script {
+                    echo "==================================================="
+                    echo "PERFORMANCE MONITORING CONFIGURATION"
+                    echo "==================================================="
+                    echo "Performance Trend Tracking: ${env.ENABLE_PERFORMANCE_TREND}"
+                    echo "Threshold Gate: ${env.ENABLE_THRESHOLD_GATE}"
+                    if (env.ENABLE_THRESHOLD_GATE == 'true') {
+                        echo "  - Max Error %: ${env.MAX_ERROR_PERCENTAGE}"
+                        echo "  - Max Avg Response Time: ${env.MAX_AVG_RESPONSE_TIME} ms"
+                        echo "  - Min Throughput: ${env.MIN_THROUGHPUT} req/sec"
+                        echo "  - Max 90th Percentile: ${env.MAX_90_PERCENTILE} ms"
+                    }
+                    echo "==================================================="
+                }
+                
+                bat '''
+                    @echo off
+                    setlocal EnableExtensions
+                    chcp 65001 >nul
+                    
+                    echo ============================================
+                    echo Cleanup: Deleting old JTL files and HTML reports
+                    echo ============================================
+                    
+                    rem Honor JMETER_ADDOPTS via JVM_ARGS for jmeter.bat
+                    set "JVM_ARGS=%JMETER_ADDOPTS%"
+                    
+                    rem Quick env echo
+                    echo WORKSPACE=%WORKSPACE%
+                    echo JMETER_HOME=%JMETER_HOME%
+                    echo JMX_DIR=%JMX_DIR%
+                    echo FIXED_RESULTS=%FIXED_RESULTS%
+                    echo FIXED_REPORT=%FIXED_REPORT%
+                    
+                    rem Verify JMeter installation
+                    call "%JMETER_HOME%\\bin\\jmeter.bat" -v
+                    echo JMETER_VERSION_RC=%ERRORLEVEL%
+                    
+                    rem Ensure base dirs
+                    if not exist "%JMX_DIR%" mkdir "%JMX_DIR%"
+                    if exist "%FIXED_RESULTS%\\." (
+                        del /q "%FIXED_RESULTS%\\*.jtl" 2>nul
+                    ) else (
+                        mkdir "%FIXED_RESULTS%"
+                    )
+                    
+                    if exist "%FIXED_REPORT%\\." rmdir /s /q "%FIXED_REPORT%"
+                    mkdir "%FIXED_REPORT%"
+                    
+                    rem Clean workspace mirrors
+                    if exist "%WORKSPACE%\\%WS_RESULTS_DIR%\\." rmdir /s /q "%WORKSPACE%\\%WS_RESULTS_DIR%"
+                    if exist "%WORKSPACE%\\%WS_REPORT_DIR%\\."  rmdir /s /q "%WORKSPACE%\\%WS_REPORT_DIR%"
+                    mkdir "%WORKSPACE%\\%WS_RESULTS_DIR%"
+                    mkdir "%WORKSPACE%\\%WS_REPORT_DIR%"
+                    
+                    rem Show what JMXs are available
+                    echo === JMX in %JMX_DIR% ===
+                    dir /a-d /-c "%JMX_DIR%\\*.jmx" 2>nul
+                    
+                    echo ============================================
+                    echo Cleanup completed successfully
+                    echo ============================================
+                '''
+            }
+        }
+        
+        stage('Run JMeter (Auto-detect)') {
+            steps {
+                timeout(time: 15, unit: 'MINUTES') {
+                    bat '''
+                        @echo off
+                        setlocal EnableExtensions EnableDelayedExpansion
+                        chcp 65001 >nul
+
+                        rem -------- Count *.jmx in JMX_DIR --------
+                        set "COUNT=0"
+                        set "ONE_NAME="
+                        pushd "%JMX_DIR%" >nul 2>&1
+                        if errorlevel 1 (
+                            echo ERROR: JMX_DIR not accessible: "%JMX_DIR%"
+                            exit /b 2
+                        )
+                        for %%F in (*.jmx) do (
+                            set /a COUNT+=1
+                            set "ONE_NAME=%%~nxF"
+                        )
+                        popd >nul
+
+                        echo [INFO] Found !COUNT! JMX file(s) in "%JMX_DIR%"
+
+                        if "!COUNT!"=="0" (
+                            echo ERROR: No .jmx files found in "%JMX_DIR%".
+                            exit /b 2
+                        )
+
+                        if "!COUNT!"=="1" (
+                            echo [MODE] SINGLE (running "!ONE_NAME!")
+                            call :RUN_ONE "!ONE_NAME!" || (
+                                echo FAIL@RUN_ONE SINGLE
+                                exit /b 1
+                            )
+
+                            rem ---- Flatten SINGLE report to root of WS_REPORT_DIR ----
+                            if exist "%WORKSPACE%\\%WS_REPORT_DIR%\\." rmdir /s /q "%WORKSPACE%\\%WS_REPORT_DIR%"
+                            mkdir "%WORKSPACE%\\%WS_REPORT_DIR%"
+
+                            robocopy "%RUN_REPORT_DIR%" "%WORKSPACE%\\%WS_REPORT_DIR%" /e /np /nfl /ndl /r:1 /w:1 /mt:8
+                            set "RC=%ERRORLEVEL%"
+                            echo ROBOCOPY_RC=%RC%
+                            if %RC% GEQ 8 (
+                                echo ERROR: ROBOCOPY failed with code %RC%
+                                exit /b 1
+                            )
+
+                            echo === DEBUG (SINGLE): jmeter-html-report root ===
+                            dir /b "%WORKSPACE%\\%WS_REPORT_DIR%" 2>nul
+                            echo.
+                            echo === DEBUG (SINGLE): content\\js ===
+                            dir /b "%WORKSPACE%\\%WS_REPORT_DIR%\\content\\js" 2>nul
+                            exit /b 0
+                        )
+
+                        rem -------- 2+ files => run ALL --------
+                        echo [MODE] ALL (running every *.jmx in "%JMX_DIR%")
+                        pushd "%JMX_DIR%" >nul
+                        for %%F in (*.jmx) do (
+                            call :RUN_ONE "%%~nxF" || (
+                                echo FAIL@RUN_ONE ALL on %%~nxF
+                                popd
+                                exit /b 1
+                            )
+
+                            rem Mirror each per-test dashboard into WS_REPORT_DIR\\<RunName>
+                            robocopy "%RUN_REPORT_DIR%" "%WORKSPACE%\\%WS_REPORT_DIR%\\%RUN_NAME%" /e /np /nfl /ndl /r:1 /w:1 /mt:8
+                            set "RC2=!ERRORLEVEL!"
+                            echo ROBOCOPY_RC=!RC2! for %%~nxF
+                            if !RC2! GEQ 8 (
+                                echo ERROR: ROBOCOPY failed with code !RC2! for %%~nxF
+                                popd
+                                exit /b 1
+                            )
+                        )
+                        popd >nul
+
+                        rem ---- Build landing index.html linking each subfolder ----
+                        > "%WORKSPACE%\\%WS_REPORT_DIR%\\index.html" (
+                            echo ^<!DOCTYPE html^>
+                            echo ^<html^>^<head^>^<meta charset=^"utf-8^"^>^<title^>JMeter Reports^</title^>^</head^>
+                            echo ^<body style=^"font-family:Segoe UI,Arial,sans-serif; margin:24px;^"^>
+                            echo ^<h2^>JMeter HTML Reports^</h2^>
+                            echo ^<ul^>
+                        )
+                        for /D %%D in ("%WORKSPACE%\\%WS_REPORT_DIR%\\*") do (
+                            set "DN=%%~nxD"
+                            if /I not "!DN!"=="assets" if /I not "!DN!"=="content" if /I not "!DN!"=="data" (
+                                >> "%WORKSPACE%\\%WS_REPORT_DIR%\\index.html" echo ^<li^>^<a href=^"!DN!/index.html^"^>!DN!^</a^>^</li^>
+                            )
+                        )
+                        >> "%WORKSPACE%\\%WS_REPORT_DIR%\\index.html" (
+                            echo ^</ul^>
+                            echo ^</body^>^</html^>
+                        )
+
+                        echo === DEBUG (ALL): ws report root ===
+                        dir /b "%WORKSPACE%\\%WS_REPORT_DIR%" 2>nul
+                        exit /b 0
+
+                        :RUN_ONE
+                        rem %~1 = JMX filename
+                        set "SEL_JMX=%~1"
+                        set "RUN_NAME=%SEL_JMX%"
+                        set "RUN_NAME=%RUN_NAME:.jmx=%"
+
+                        rem ---- sanitize run name (avoid spaces/specials in folder/file names)
+                        set "RUN_NAME=%RUN_NAME: =_%"
+                        set "RUN_NAME=%RUN_NAME:(=%"
+                        set "RUN_NAME=%RUN_NAME:)=%"
+                        set "RUN_NAME=%RUN_NAME:&=%"
+
+                        echo ------------------------------------------------------------
+                        echo Running JMeter on "%SEL_JMX%" (run name: %RUN_NAME%)
+                        echo JTL file: %FIXED_RESULTS%\\%RUN_NAME%.jtl
+                        echo HTML report: %FIXED_REPORT%\\%RUN_NAME%
+                        echo ------------------------------------------------------------
+
+                        rem Honor JMETER_ADDOPTS in this run
+                        set "JVM_ARGS=%JMETER_ADDOPTS%"
+
+                        rem Run JMeter non-GUI to produce JTL
+                        call "%JMETER_HOME%\\bin\\jmeter.bat" -n -t "%JMX_DIR%\\%SEL_JMX%" -l "%FIXED_RESULTS%\\%RUN_NAME%.jtl"
+                        set "RC_JM_RUN=%ERRORLEVEL%"
+                        echo RC_JM_RUN=%RC_JM_RUN%
+                        if %RC_JM_RUN% NEQ 0 (
+                            echo ERROR: JMeter non-zero exit for "%SEL_JMX%"
+                            if exist "%JMETER_HOME%\\bin\\jmeter.log" (
+                                echo --- jmeter.log ---
+                                type "%JMETER_HOME%\\bin\\jmeter.log"
+                            )
+                            exit /b 1
+                        )
+
+                        rem Guard against empty/short JTL (e.g., early aborts)
+                        for %%S in ("%FIXED_RESULTS%\\%RUN_NAME%.jtl") do (
+                            echo JTL_SIZE=%%~zS bytes
+                            if %%~zS LSS 10 (
+                                echo ERROR: JTL looks empty for "%SEL_JMX%"
+                                exit /b 1
+                            )
+                        )
+
+                        rem Generate HTML dashboard from JTL with line graph settings
+                        set "RUN_REPORT_DIR=%FIXED_REPORT%\\%RUN_NAME%"
+                        if exist "%RUN_REPORT_DIR%\\." rmdir /s /q "%RUN_REPORT_DIR%"
+                        call "%JMETER_HOME%\\bin\\jmeter.bat" -Jjmeter.reportgenerator.overall_granularity=500 -g "%FIXED_RESULTS%\\%RUN_NAME%.jtl" -o "%RUN_REPORT_DIR%"
+                        set "RC_JM_HTML=%ERRORLEVEL%"
+                        echo RC_JM_HTML=%RC_JM_HTML%
+                        if %RC_JM_HTML% NEQ 0 (
+                            echo ERROR: HTML dashboard generation failed for "%SEL_JMX%"
+                            if exist "%JMETER_HOME%\\bin\\jmeter.log" (
+                                echo --- jmeter.log ---
+                                type "%JMETER_HOME%\\bin\\jmeter.log"
+                            )
+                            exit /b 1
+                        )
+
+                        echo HTML report created: %RUN_REPORT_DIR%
+
+                        rem Mirror JTL into workspace for Performance plugin
+                        copy /y "%FIXED_RESULTS%\\%RUN_NAME%.jtl" "%WORKSPACE%\\%WS_RESULTS_DIR%\\%RUN_NAME%.jtl" >nul
+
+                        exit /b 0
+                    '''
+                }
+            }
+        }
+        
+        stage('Threshold Gate Analysis') {
+            when {
+                expression { env.ENABLE_THRESHOLD_GATE == 'true' }
+            }
+            steps {
+                script {
+                    echo "==================================================="
+                    echo "THRESHOLD GATE VALIDATION"
+                    echo "==================================================="
+                    
+                    def thresholdsFailed = false
+                    def failureMessages = []
+                    
+                    try {
+                        // List all JTL files using bat command
+                        def jtlListOutput = bat(
+                            script: '@echo off & dir /b "%WORKSPACE%\\jmeter-results\\*.jtl" 2>nul',
+                            returnStdout: true
+                        ).trim()
+                        
+                        if (!jtlListOutput) {
+                            echo "⚠ No JTL files found for threshold analysis"
+                            return
+                        }
+                        
+                        def jtlFiles = jtlListOutput.split('\n')
+                        
+                        jtlFiles.each { jtlFileName ->
+                            def jtlFile = jtlFileName.trim()
+                            if (jtlFile) {
+                                echo "\n--- Analyzing: ${jtlFile} ---"
+                                
+                                def jtlPath = "${env.WORKSPACE}\\jmeter-results\\${jtlFile}"
+                                
+                                // Parse JTL file and calculate metrics
+                                def jtlContent = readFile(jtlPath)
+                                def lines = jtlContent.split('\n')
+                                
+                                def totalSamples = 0
+                                def errorCount = 0
+                                def totalResponseTime = 0.0
+                                def responseTimes = []
+                                def startTime = 9223372036854775807L  // Long.MAX_VALUE
+                                def endTime = -9223372036854775808L   // Long.MIN_VALUE
+                                
+                                // Skip header line
+                                def dataLines = lines.size() > 1 ? lines[1..-1] : []
+                                
+                                dataLines.each { line ->
+                                    if (line.trim()) {
+                                        def fields = line.split(',')
+                                        if (fields.size() >= 3) {
+                                            try {
+                                                def timestamp = fields[0].toLong()
+                                                def elapsed = fields[1].toFloat()
+                                                def success = fields[fields.size() - 1].trim().toLowerCase() == 'true'
+                                                
+                                                totalSamples++
+                                                totalResponseTime += elapsed
+                                                responseTimes.add(elapsed)
+                                                
+                                                if (!success) {
+                                                    errorCount++
+                                                }
+                                                
+                                                if (timestamp < startTime) startTime = timestamp
+                                                if (timestamp > endTime) endTime = timestamp
+                                                
+                                            } catch (Exception e) {
+                                                // Skip malformed lines
+                                            }
+                                        }
+                                    }
+                                }
+                                
+                                if (totalSamples > 0) {
+                                    def errorRate = (errorCount / totalSamples * 100).round(2)
+                                    def avgResponseTime = (totalResponseTime / totalSamples).round(2)
+                                    
+                                    // Calculate 90th percentile
+                                    def sortedTimes = responseTimes.sort()
+                                    def p90Index = (int)(sortedTimes.size() * 0.9)
+                                    def percentile90 = p90Index < sortedTimes.size() ? sortedTimes[p90Index].round(2) : 0.0
+                                    
+                                    // Calculate throughput (requests per second)
+                                    def durationSeconds = (endTime - startTime) / 1000.0
+                                    def throughput = durationSeconds > 0 ? (totalSamples / durationSeconds).round(2) : 0.0
+                                    
+                                    echo "Metrics:"
+                                    echo "  - Error Rate: ${errorRate}%"
+                                    echo "  - Avg Response Time: ${avgResponseTime} ms"
+                                    echo "  - 90th Percentile: ${percentile90} ms"
+                                    echo "  - Throughput: ${throughput} req/sec"
+                                    echo "  - Total Samples: ${totalSamples}"
+                                    
+                                    // Check thresholds
+                                    if (errorRate > env.MAX_ERROR_PERCENTAGE.toFloat()) {
+                                        def msg = "❌ ${jtlFile}: Error rate ${errorRate}% exceeds threshold ${env.MAX_ERROR_PERCENTAGE}%"
+                                        failureMessages.add(msg)
+                                        echo msg
+                                        thresholdsFailed = true
+                                    } else {
+                                        echo "✓ Error rate within threshold"
+                                    }
+                                    
+                                    if (avgResponseTime > env.MAX_AVG_RESPONSE_TIME.toFloat()) {
+                                        def msg = "❌ ${jtlFile}: Avg response time ${avgResponseTime}ms exceeds threshold ${env.MAX_AVG_RESPONSE_TIME}ms"
+                                        failureMessages.add(msg)
+                                        echo msg
+                                        thresholdsFailed = true
+                                    } else {
+                                        echo "✓ Avg response time within threshold"
+                                    }
+                                    
+                                    if (throughput < env.MIN_THROUGHPUT.toFloat()) {
+                                        def msg = "❌ ${jtlFile}: Throughput ${throughput} req/sec below threshold ${env.MIN_THROUGHPUT} req/sec"
+                                        failureMessages.add(msg)
+                                        echo msg
+                                        thresholdsFailed = true
+                                    } else {
+                                        echo "✓ Throughput within threshold"
+                                    }
+                                    
+                                    if (percentile90 > env.MAX_90_PERCENTILE.toFloat()) {
+                                        def msg = "❌ ${jtlFile}: 90th percentile ${percentile90}ms exceeds threshold ${env.MAX_90_PERCENTILE}ms"
+                                        failureMessages.add(msg)
+                                        echo msg
+                                        thresholdsFailed = true
+                                    } else {
+                                        echo "✓ 90th percentile within threshold"
+                                    }
+                                } else {
+                                    echo "⚠ No valid samples found in ${jtlFile}"
+                                }
+                            }
+                        }
+                        
+                        echo "\n==================================================="
+                        if (thresholdsFailed) {
+                            echo "THRESHOLD GATE: FAILED ❌"
+                            echo "==================================================="
+                            failureMessages.each { msg -> echo msg }
+                            unstable("Performance thresholds exceeded - marking build as UNSTABLE")
+                        } else {
+                            echo "THRESHOLD GATE: PASSED ✓"
+                            echo "All performance metrics are within acceptable limits"
+                            echo "==================================================="
+                        }
+                        
+                    } catch (Exception e) {
+                        echo "⚠ Warning: Threshold analysis failed: ${e.message}"
+                        echo "Continuing pipeline execution..."
+                    }
+                }
+            }
+        }
+        
+        stage('Publish Reports') {
+            steps {
+                script {
+                    echo "==================================================="
+                    echo "PUBLISHING REPORTS"
+                    echo "==================================================="
+                    
+                    // Check if HTML report files exist
+                    def htmlReportExists = fileExists('jmeter-html-report/index.html')
+                    def jsFilesExist = fileExists('jmeter-html-report/content/js/dashboard.js')
+                    
+                    echo "HTML Report Status:"
+                    echo "  - index.html exists: ${htmlReportExists}"
+                    echo "  - JavaScript files exist: ${jsFilesExist}"
+                    
+                    if (!htmlReportExists) {
+                        echo "⚠️ WARNING: HTML report index.html not found!"
+                    }
+                }
+                
+                // HTML dashboard
+                publishHTML(target: [
+                    reportDir: 'jmeter-html-report',
+                    reportFiles: 'index.html',
+                    reportName: 'JMeter HTML Dashboard',
+                    keepAll: true,
+                    alwaysLinkToLastBuild: true,
+                    allowMissing: false
+                ])
+                
+                script {
+                    if (!fileExists('jmeter-html-report/index.html')) {
+                        echo "\n⚠️  IMPORTANT: HTML Dashboard is empty or missing!"
+                        echo "   Run this in Jenkins Script Console (Manage Jenkins → Script Console):"
+                        echo "   System.setProperty(\"hudson.model.DirectoryBrowserSupport.CSP\", \"sandbox allow-scripts allow-same-origin; default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline';\")"
+                        echo "   Then refresh the dashboard page.\n"
+                    }
+                    
+                    // Performance trend report (if enabled)
+                    if (env.ENABLE_PERFORMANCE_TREND == 'true') {
+                        echo "==================================================="
+                        echo "GENERATING PERFORMANCE TREND REPORT"
+                        echo "==================================================="
+                        try {
+                            perfReport(
+                                sourceDataFiles: 'jmeter-results/*.jtl',
+                                errorFailedThreshold: 100,
+                                errorUnstableThreshold: 100,
+                                nthBuildNumber: 10,
+                                modeOfThreshold: true,
+                                failBuildIfNoResultFile: false
+                            )
+                            echo "✓ Performance Plugin report published"
+                        } catch (Exception e) {
+                            echo "⚠ Performance report publication skipped: ${e.message}"
+                        }
+                    } else {
+                        echo "⊘ Performance trend tracking disabled"
+                    }
+                }
+            }
+        }
+    }
+    
+    post {
+        always {
+            script {
+                archiveArtifacts artifacts: 'jmeter-results/*.jtl', fingerprint: true, allowEmptyArchive: true
+                
+                echo "\n==================================================="
+                echo "BUILD SUMMARY"
+                echo "==================================================="
+                echo "Build Status: ${currentBuild.result ?: 'SUCCESS'}"
+                echo "Performance Trend: ${env.ENABLE_PERFORMANCE_TREND == 'true' ? 'Enabled' : 'Disabled'}"
+                echo "Threshold Gate: ${env.ENABLE_THRESHOLD_GATE == 'true' ? 'Enabled' : 'Disabled'}"
+                echo "==================================================="
+            }
+        }
+        success {
+            echo "✓ Pipeline completed successfully!"
+        }
+        failure {
+            echo "❌ Pipeline failed. Check logs for details."
+        }
+        unstable {
+            echo "⚠ Pipeline completed with warnings."
+        }
+    }
+}
