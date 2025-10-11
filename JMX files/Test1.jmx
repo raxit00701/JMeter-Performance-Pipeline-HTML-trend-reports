@@ -598,7 +598,7 @@
         </ResultCollector>
         <hashTree/>
       </hashTree>
-      <ThreadGroup guiclass="ThreadGroupGui" testclass="ThreadGroup" testname="Signup">
+      <ThreadGroup guiclass="ThreadGroupGui" testclass="ThreadGroup" testname="Signup" enabled="true">
         <intProp name="ThreadGroup.num_threads">20</intProp>
         <intProp name="ThreadGroup.ramp_time">3</intProp>
         <boolProp name="ThreadGroup.same_user_on_next_iteration">true</boolProp>
@@ -1108,7 +1108,7 @@ log.info(&quot;Generated username: ${username}&quot;)
         </ResultCollector>
         <hashTree/>
       </hashTree>
-      <kg.apc.jmeter.threads.UltimateThreadGroup guiclass="kg.apc.jmeter.threads.UltimateThreadGroupGui" testclass="kg.apc.jmeter.threads.UltimateThreadGroup" testname="Signup - Ultimate Thread Group">
+      <kg.apc.jmeter.threads.UltimateThreadGroup guiclass="kg.apc.jmeter.threads.UltimateThreadGroupGui" testclass="kg.apc.jmeter.threads.UltimateThreadGroup" testname="Signup - Ultimate Thread Group" enabled="true">
         <collectionProp name="ultimatethreadgroupdata">
           <collectionProp name="-971809380">
             <stringProp name="1598">20</stringProp>
@@ -2149,7 +2149,7 @@ log.info(&quot;Generated username: ${username}&quot;)</stringProp>
           <stringProp name="filename"></stringProp>
         </ResultCollector>
         <hashTree/>
-        <ResultCollector guiclass="AssertionVisualizer" testclass="ResultCollector" testname="Assertion Results">
+        <ResultCollector guiclass="AssertionVisualizer" testclass="ResultCollector" testname="Assertion Results" enabled="true">
           <boolProp name="ResultCollector.error_logging">false</boolProp>
           <objProp>
             <name>saveConfig</name>
@@ -2187,7 +2187,7 @@ log.info(&quot;Generated username: ${username}&quot;)</stringProp>
         </ResultCollector>
         <hashTree/>
       </hashTree>
-      <ThreadGroup guiclass="ThreadGroupGui" testclass="ThreadGroup" testname="Bank features">
+      <ThreadGroup guiclass="ThreadGroupGui" testclass="ThreadGroup" testname="Bank features" enabled="true">
         <intProp name="ThreadGroup.num_threads">1</intProp>
         <intProp name="ThreadGroup.ramp_time">1</intProp>
         <boolProp name="ThreadGroup.same_user_on_next_iteration">true</boolProp>
@@ -2742,7 +2742,7 @@ log.info(&quot;Generated username: ${username}&quot;)</stringProp>
         </CookieManager>
         <hashTree/>
       </hashTree>
-      <ThreadGroup guiclass="ThreadGroupGui" testclass="ThreadGroup" testname="Interleave Demo">
+      <ThreadGroup guiclass="ThreadGroupGui" testclass="ThreadGroup" testname="Interleave Demo" enabled="true">
         <intProp name="ThreadGroup.num_threads">20</intProp>
         <intProp name="ThreadGroup.ramp_time">2</intProp>
         <boolProp name="ThreadGroup.same_user_on_next_iteration">true</boolProp>
@@ -3419,7 +3419,7 @@ log.info(&quot;Generated username: ${username}&quot;)</stringProp>
             <hashTree/>
           </hashTree>
         </hashTree>
-        <ResultCollector guiclass="StatVisualizer" testclass="ResultCollector" testname="Aggregate Report">
+        <ResultCollector guiclass="StatVisualizer" testclass="ResultCollector" testname="Aggregate Report" enabled="true">
           <boolProp name="ResultCollector.error_logging">false</boolProp>
           <objProp>
             <name>saveConfig</name>
@@ -3456,7 +3456,7 @@ log.info(&quot;Generated username: ${username}&quot;)</stringProp>
           <stringProp name="filename"></stringProp>
         </ResultCollector>
         <hashTree/>
-        <ResultCollector guiclass="ViewResultsFullVisualizer" testclass="ResultCollector" testname="View Results Tree">
+        <ResultCollector guiclass="ViewResultsFullVisualizer" testclass="ResultCollector" testname="View Results Tree" enabled="true">
           <boolProp name="ResultCollector.error_logging">false</boolProp>
           <objProp>
             <name>saveConfig</name>
@@ -3500,7 +3500,7 @@ log.info(&quot;Generated username: ${username}&quot;)</stringProp>
         </CookieManager>
         <hashTree/>
       </hashTree>
-      <ThreadGroup guiclass="ThreadGroupGui" testclass="ThreadGroup" testname="Csv data driven Sign In">
+      <ThreadGroup guiclass="ThreadGroupGui" testclass="ThreadGroup" testname="Csv data driven Sign In" enabled="true">
         <intProp name="ThreadGroup.num_threads">7</intProp>
         <intProp name="ThreadGroup.ramp_time">1</intProp>
         <boolProp name="ThreadGroup.same_user_on_next_iteration">true</boolProp>
@@ -3701,7 +3701,7 @@ log.info(&quot;Generated username: ${username}&quot;)</stringProp>
           <stringProp name="variableNames">username,password</stringProp>
         </CSVDataSet>
         <hashTree/>
-        <ResultCollector guiclass="StatVisualizer" testclass="ResultCollector" testname="Aggregate Report">
+        <ResultCollector guiclass="StatVisualizer" testclass="ResultCollector" testname="Aggregate Report" enabled="true">
           <boolProp name="ResultCollector.error_logging">false</boolProp>
           <objProp>
             <name>saveConfig</name>
@@ -3739,7 +3739,7 @@ log.info(&quot;Generated username: ${username}&quot;)</stringProp>
         </ResultCollector>
         <hashTree/>
       </hashTree>
-      <ResultCollector guiclass="SimpleDataWriter" testclass="ResultCollector" testname="Simple Data Writer">
+      <ResultCollector guiclass="SimpleDataWriter" testclass="ResultCollector" testname="Simple Data Writer" enabled="true">
         <boolProp name="ResultCollector.error_logging">false</boolProp>
         <objProp>
           <name>saveConfig</name>
