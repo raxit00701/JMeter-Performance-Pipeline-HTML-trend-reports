@@ -3,7 +3,7 @@
 **End‑to‑end performance testing on [ParaBank](https://parabank.parasoft.com/), built with Apache JMeter 5.6.3 and wired to Jenkins for automated HTML dashboards and long‑term trend analytics.**  
 Covers smoke ➜ load ➜ stress models with data‑driven flows, realistic think times, and CI artifacts that are recruiter‑friendly.
 
-![JMeter HTML Dashboard](/assets/dashboard.png)
+
 
 ---
 
