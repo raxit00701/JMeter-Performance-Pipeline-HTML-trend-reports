@@ -1,5 +1,14 @@
 # RaxitPerf JMeter Pipeline
 
+## License
+
+This project is proprietary and protected by copyright.
+
+**All Rights Reserved © 2026 Raxit Sharma**
+
+No permission is granted to use, copy, modify, distribute, or create
+derivative works from this code without explicit written permission.
+
 **End‑to‑end performance testing on [ParaBank](https://parabank.parasoft.com/), built with Apache JMeter 5.6.3 and wired to Jenkins for automated HTML dashboards and long‑term trend analytics.**  
 Covers smoke ➜ load ➜ stress models with data‑driven flows, realistic think times, and CI artifacts that are recruiter‑friendly.
 
