@@ -1,4 +1,4 @@
-# RaxitPerf JMeter Pipeline
+# Raxit Perf JMeter Pipeline
 
 ## License
 
